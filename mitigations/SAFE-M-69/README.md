@@ -1,10 +1,10 @@
 # SAFE-M-69: Out-of-Band Authorization for Privileged Tool Invocations
 
 ## Overview
-**Mitigation ID**: SAFE-M-69
-**Category**: Preventive Control (Architectural)
-**Effectiveness**: High
-**Implementation Complexity**: Medium-High
+**Mitigation ID**: SAFE-M-69  
+**Category**: Preventive Control (Architectural)  
+**Effectiveness**: High  
+**Implementation Complexity**: Medium-High  
 **First Published**: 2026-04-14
 
 ## Description

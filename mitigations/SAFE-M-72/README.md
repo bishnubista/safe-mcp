@@ -1,12 +1,11 @@
 # SAFE-M-72: Data Security - Data Loss Prevention on Tool Outputs
 
 ## Overview
-**Mitigation ID**: SAFE-M-72
-**Category**: Data Security
-**Effectiveness**: Medium-High (inline masking and tokenization are deterministic; policy accuracy is bounded by classification quality and detector recall)
-**Implementation Complexity**: Medium-High
+**Mitigation ID**: SAFE-M-72  
+**Category**: Data Security  
+**Effectiveness**: Medium-High (inline masking and tokenization are deterministic; policy accuracy is bounded by classification quality and detector recall)  
+**Implementation Complexity**: Medium-High  
 **First Published**: 2026-04-14
-**Author**: bishnu bista
 
 ## Description
 Data Loss Prevention (DLP) on Tool Outputs applies column-level classification, masking, tokenization, and sensitive-content detection to the results returned by MCP tools **before** those results enter the agent's context window or are surfaced to a user. The control treats every tool response as an untrusted egress point from a protected data store: structured rows from database connectors, semi-structured payloads from API wrappers, and free-text fields from document/knowledge tools are all inspected against a policy that maps sensitivity labels (PII, PCI, PHI, secrets, IP) to actions (allow, mask, tokenize, redact, block, alert).
