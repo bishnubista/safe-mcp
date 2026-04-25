@@ -244,7 +244,7 @@ tags:
 ```yaml
 # EXAMPLE SIGMA RULE - MCP Server Misconfiguration Detection
 title: MCP Server Bound to All Interfaces (NeighborJack Risk)
-id: c9f3e258-4d7e-5b93-0f6c-3g2e4d5b9c8f
+id: 4618c5bb-f2d9-4407-a0cc-038626249a82
 status: experimental
 description: Detects MCP servers potentially exposed via 0.0.0.0 binding
 author: Raju Kumar Yadav
@@ -281,7 +281,7 @@ tags:
 ```yaml
 # EXAMPLE SIGMA RULE - WebSocket Port Scanning Detection
 title: WebSocket Port Scanning for MCP Server Discovery
-id: d0g4f369-5e8f-6c04-1g7d-4h3f5e6c0d9g
+id: 37271546-9587-4f18-90b6-002e4fd80d29
 status: experimental
 description: Detects rapid WebSocket connection attempts indicative of MCP server discovery
 author: Raju Kumar Yadav
@@ -318,6 +318,13 @@ tags:
 
 ## Mitigation Strategies
 
+<!-- TODO: The Preventive Controls below describe endpoint-exposure-specific defenses
+     (network binding, mandatory authentication, firewall rules, HTTPS enforcement,
+     debug-mode disable) that are not covered by any existing SAFE-M mitigation as of
+     this writing. Corpus-side follow-up: author SAFE-M entries for these controls and
+     replace the prose bullets here with `[SAFE-M-X: Name](../../mitigations/SAFE-M-X/README.md)`
+     references per TEMPLATE-CHECKLIST. -->
+
 ### Preventive Controls
 1. **Network Binding Restrictions**: Configure all MCP servers to bind exclusively to localhost (127.0.0.1) rather than all interfaces (0.0.0.0). According to [Backslash Security research](https://authzed.com/blog/timeline-mcp-breaches), this single configuration change eliminates the NeighborJack attack vector.
 
@@ -334,13 +341,13 @@ tags:
 7. **Use HTTPS/TLS**: Always use encrypted connections (wss://, https://) for MCP communications to prevent man-in-the-middle attacks, especially for mcp-remote connections ([JFrog Security recommendation](https://jfrog.com/blog/2025-6514-critical-mcp-remote-rce-vulnerability/)).
 
 ### Detective Controls
-1. **Process Monitoring**: Monitor for unusual child processes spawned by MCP servers, particularly shell commands, file operations, or network utilities.
+1. **Process Monitoring**: Monitor for unusual child processes spawned by MCP servers, particularly shell commands, file operations, or network utilities. See [SAFE-M-11: Behavioral Monitoring](../../mitigations/SAFE-M-11/README.md).
 
-2. **Network Monitoring**: Implement network traffic analysis to detect unauthorized access attempts, WebSocket port scanning, and suspicious enumeration patterns.
+2. **Network Monitoring**: Implement network traffic analysis to detect unauthorized access attempts, WebSocket port scanning, and suspicious enumeration patterns. See [SAFE-M-11: Behavioral Monitoring](../../mitigations/SAFE-M-11/README.md).
 
-3. **HTTP Request Analysis**: Log and analyze all requests to MCP endpoints, flagging enumeration attempts, command injection patterns, and access from unexpected sources.
+3. **HTTP Request Analysis**: Log and analyze all requests to MCP endpoints, flagging enumeration attempts, command injection patterns, and access from unexpected sources. See [SAFE-M-12: Audit Logging](../../mitigations/SAFE-M-12/README.md).
 
-4. **Audit Network Bindings**: Regularly audit running MCP services to ensure they are not inadvertently bound to public interfaces.
+4. **Audit Network Bindings**: Regularly audit running MCP services to ensure they are not inadvertently bound to public interfaces. See [SAFE-M-12: Audit Logging](../../mitigations/SAFE-M-12/README.md).
 
 ### Response Procedures
 1. **Immediate Actions**:
@@ -379,6 +386,7 @@ tags:
 - [CVE-2025-49596 - NIST NVD](https://nvd.nist.gov/vuln/detail/CVE-2025-49596)
 - [CVE-2025-52882 - NIST NVD](https://nvd.nist.gov/vuln/detail/CVE-2025-52882)
 - [CVE-2025-6514 - NIST NVD](https://nvd.nist.gov/vuln/detail/CVE-2025-6514)
+- [CVE-2025-66416 - NIST NVD (DNS rebinding in MCP Python SDK pre-1.23.0, FastMCP HTTP/SSE transports)](https://nvd.nist.gov/vuln/detail/CVE-2025-66416)
 - [CVE-2025-52882: WebSocket authentication bypass in Claude Code extensions - Datadog Security Labs](https://securitylabs.datadoghq.com/articles/claude-mcp-cve-2025-52882/)
 - [Critical RCE in Anthropic MCP Inspector (CVE-2025-49596) Enables Browser-Based Exploits - Oligo Security](https://www.oligo.security/blog/critical-rce-vulnerability-in-anthropic-mcp-inspector-cve-2025-49596)
 - [Critical RCE Vulnerability in mcp-remote: CVE-2025-6514 Threatens LLM Clients - JFrog Security](https://jfrog.com/blog/2025-6514-critical-mcp-remote-rce-vulnerability/)
@@ -397,10 +405,9 @@ tags:
 - [T1190 - Exploit Public-Facing Application](https://attack.mitre.org/techniques/T1190/)
 - [T1133 - External Remote Services](https://attack.mitre.org/techniques/T1133/)
 - [T1046 - Network Service Discovery](https://attack.mitre.org/techniques/T1046/)
-- [T1087 - Account Discovery](https://attack.mitre.org/techniques/T1087/)
-- [T1059 - Command and Scripting Interpreter](https://attack.mitre.org/techniques/T1059/)
 
 ## Version History
 | Version | Date | Changes | Author |
 |---------|------|---------|--------|
 | 1.0 | 2026-01-06 | Initial documentation with CVE analysis and research compilation | Raju Kumar Yadav |
+| 1.1 | 2026-04-24 | Audit pass: replace two invalid Sigma rule UUIDs (non-hex characters), add SAFE-M-11/SAFE-M-12 references on detective controls, restore CVE-2025-66416 to References, trim non-fitting MITRE mappings (T1087, T1059), TODO marker for endpoint-exposure-specific SAFE-M authoring | bishnu bista |
