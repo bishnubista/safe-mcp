@@ -430,4 +430,4 @@ tags:
 |---------|------|---------|--------|
 | 1.0 | 2025-12-04 | Initial documentation of Compromised-Server Pivot technique | rajivsth |
 | 2.0 | 2025-01-20 | Major revision: expanded attack vectors, detailed workspace pivot scenarios, comprehensive Sigma rules, and new mitigations (SAFE-M-58 through SAFE-M-68) | Pritika Bista |
-| 2.1 | 2025-02-17 | Merged unique content from v1.0: added T1570 mapping, arXiv research references, server-side context injection technique, original mitigations (SAFE-M-01/05/07/11/15), and additional IoCs | bishnubista |
+| 2.1 | 2025-02-17 | Merged unique content from v1.0: added T1570 mapping, arXiv research references, server-side context injection technique, original mitigations (SAFE-M-1/5/7/11/15), and additional IoCs | bishnubista |

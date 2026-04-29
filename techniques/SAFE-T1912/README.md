@@ -188,17 +188,17 @@ tags:
 ## Mitigation Strategies
 ### Preventive Controls
 
-- SAFE-M-003: Output Sanitization — Strip zero-width characters and detect suspicious encoding patterns.
+- SAFE-M-3: Output Sanitization — Strip zero-width characters and detect suspicious encoding patterns.
   
-- SAFE-M-014: Model Response Validation — Enforce schema validation to detect hidden or unexpected fields.
+- SAFE-M-14: Model Response Validation — Enforce schema validation to detect hidden or unexpected fields.
 
-- SAFE-M-021: Content Security Filtering — Reject high-entropy payloads inside text responses.
+- SAFE-M-21: Content Security Filtering — Reject high-entropy payloads inside text responses.
 
 ### Detective Controls
 
-- SAFE-M-009: Steganography Detection Layer — Scan for entropy anomalies in responses.
+- SAFE-M-9: Steganography Detection Layer — Scan for entropy anomalies in responses.
 
-- SAFE-M-011: Logging & Telemetry Controls — Record responses and highlight suspicious patterns.
+- SAFE-M-11: Logging & Telemetry Controls — Record responses and highlight suspicious patterns.
 
 ## Response Procedures
 
