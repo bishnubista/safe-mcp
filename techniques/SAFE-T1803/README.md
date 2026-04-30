@@ -227,4 +227,4 @@ Validate the Sigma rule and surrounding detection pipeline in a staging environm
 | Version | Date       | Changes                                                                                          | Author             |
 |---------|------------|--------------------------------------------------------------------------------------------------|--------------------|
 | 1.0     | 2025-11-29 | SAFE-T1803 database dump via MCP tools, sub-techniques, detections, mitigations, and references | Pratikshya Regmi   |
-| 1.1     | 2026-04-14 | Restructured to standard technique template; corrected SAFE-M IDs; normalized references         | SAFE-MCP Validation |
+| 1.1     | 2026-04-14 | Restructured to standard technique template; corrected SAFE-M IDs; normalized references         | bishnu bista       |
