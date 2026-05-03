@@ -57,11 +57,13 @@ For citing techniques excluded from this curated list, see the `## Out of scope`
            └───────── on any phase failure → SAFE-M-12 audit event ─┘
 ```
 
-### Prerequisites
+### Recommended Companions
 
-- A registry of permitted endpoint strings (hostnames, domains, OAuth issuer URLs) with explicit ownership and review cadence per entry.
-- An audit substrate that can persist allowlist-decision events. SAFE-M-12 *Audit Logging* is the recommended companion; if SAFE-M-12 is not yet operational in the deployment, any structured event sink with retention and tamper-evidence equivalent to a security-audit log is acceptable.
-- For OAuth flows: SAFE-M-13 *OAuth Flow Verification* as a recommended companion to validate RFC 9207 `iss` claims after M-14 admits the issuer URL. M-14 alone does not protect against a forged token claiming an allowlisted issuer.
+M-14 is functional standalone — an allowlist policy decision over endpoint strings does not require any of the following to be operational. The companions below extend M-14's coverage to threat surfaces M-14 does not address. None is a hard blocker.
+
+- A registry of permitted endpoint strings (hostnames, domains, OAuth issuer URLs) with explicit ownership and review cadence per entry — this is M-14's *own* state, not an external dependency.
+- An audit substrate to persist allowlist-decision events. SAFE-M-12 *Audit Logging* is the recommended choice; any structured event sink with retention and tamper-evidence equivalent to a security-audit log is acceptable. Without an audit substrate, M-14 still makes ADMIT/DENY decisions but loses the accountability trail.
+- For OAuth flows: SAFE-M-13 *OAuth Flow Verification* validates RFC 9207 `iss` claims after M-14 admits the issuer URL. M-14 alone does not protect against a forged token claiming an allowlisted issuer; without M-13, that gap remains open.
 - For hostname allowlists in untrusted networks: DNS integrity (DNSSEC, DNS-over-HTTPS) at the resolution layer, or cert-pinning at the transport layer, to close the DNS gap M-14 does not address.
 
 ### Implementation Steps
@@ -245,7 +247,7 @@ suppressions:
    - **Performance impact**: allowlist evaluation is a hash-set membership check; latency overhead per connection is dominated by the surrounding TCP / TLS handshake. Measure in the deployment's connection-establishment hot path before declaring overhead acceptable.
 
 3. **Integration Testing**:
-   - **Negative test — M-14 alone does not block forged-`iss` tokens**: present a token whose `iss` claim names an allowlisted issuer URL but whose signature is from a different issuer. M-14's allowlist evaluation must ADMIT the connection (the issuer URL is permitted), and the deployment must rely on SAFE-M-13's RFC 9207 `iss`-claim validation to reject the forged token. This negative test confirms M-14 is not over-claimed in the deployment.
+   - **Negative test — M-14 alone does not block forged-`iss` tokens**: present a token whose `iss` claim names an allowlisted issuer URL but whose signature is from a different issuer. M-14's allowlist evaluation will ADMIT the connection (the issuer URL is permitted) — that is M-14 behaving correctly within its surface. To reject the forged token, the deployment should be paired with SAFE-M-13's RFC 9207 `iss`-claim validation. This negative test confirms M-14 is not over-claimed in the deployment and documents the boundary at which a companion control becomes necessary.
    - **Audit-event chain**: every ADMIT and DENY decision produces a SAFE-M-12 audit event with the canonical fields (timestamp, endpoint, decision, client identifier).
 
 ## Deployment Considerations
@@ -271,8 +273,8 @@ suppressions:
 - [Model Context Protocol Specification](https://modelcontextprotocol.io/specification)
 - [RFC 9207: OAuth 2.0 Authorization Server Issuer Identification - Meyer zu Selhausen, Mainka, 2022](https://datatracker.ietf.org/doc/html/rfc9207)
 - [NIST SP 800-204C: Implementation of DevSecOps for a Microservices-based Application with Service Mesh](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-204C.pdf)
-- [NIST SP 800-207: Zero Trust Architecture](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-207.pdf)
 - [OWASP API Security Top 10 (2023)](https://owasp.org/API-Security/editions/2023/en/0x11-t10/)
+- [NIST SP 800-207: Zero Trust Architecture](https://nvlpubs.nist.gov/nistpubs/SpecialPublications/NIST.SP.800-207.pdf)
 
 ## Related Mitigations
 - [SAFE-M-2](../SAFE-M-2/README.md): Cryptographic Integrity for Tool Descriptions — recommended companion at the post-connection payload-verification layer (M-14 admits the connection; M-2 verifies what flows over it).
