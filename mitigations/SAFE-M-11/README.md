@@ -19,7 +19,7 @@ The mitigation directly addresses the following techniques (curated against the 
 - [SAFE-T1001](../../techniques/SAFE-T1001/README.md): Tool Poisoning Attack (TPA) — captures behavioral signatures of poisoned tool descriptions across agent runs (load events correlated with subsequent invocation chains).
 - [SAFE-T1102](../../techniques/SAFE-T1102/README.md): Prompt Injection (Multiple Vectors) — detects sudden context switches, execution of unrelated commands, and acknowledgment of instructions not in the original user request.
 - [SAFE-T1106](../../techniques/SAFE-T1106/README.md): Identical Call Loops — detects cyclic / identical-call patterns indicative of automated probing or stuck-reasoning loops.
-- [SAFE-T1112](../../techniques/SAFE-T1112/README.md): Sampling Request Abuse — correlates per-server sampling frequency, approval patterns, and sampling↔sensitive-action sequences (consumes M-70's per-tool sampling rate baselines).
+- [SAFE-T1112](../../techniques/SAFE-T1112/README.md): Sampling Request Abuse — correlates per-server sampling frequency, approval patterns, and sampling↔sensitive-action sequences. Operates on M-12's `tool_invocation` event stream (M-12 Principle 2 explicitly folds T1112 sampling-request logging under `tool_invocation`, including the `approval` field) plus subsequent in-session tool chain.
 - [SAFE-T1202](../../techniques/SAFE-T1202/README.md): OAuth Token Persistence *(cited as "Token Lifecycle Monitoring" in T1202)* — captures full OAuth lifecycle correlation (issue / refresh / revoke / use), post-logout use, and concurrent or location-anomalous reuse.
 - [SAFE-T1302](../../techniques/SAFE-T1302/README.md): High-Privilege Tool Abuse — detects runtime-identity drift and first-time-in-session privileged tool use.
 - [SAFE-T1303](../../techniques/SAFE-T1303/README.md): Container Sandbox Escape via Runtime Exec — detects process / cwd / mount-set anomalies relative to baseline.
@@ -43,7 +43,7 @@ See also — additional citing techniques whose Mitigation Strategies reference 
 ### Core Principles
 
 1. **Stream-on-events, two operating modes** — M-11 consumes M-12's structured event stream and operates in two modes:
-   - **Metadata-driven (default)**: works on event metadata only (event type, IDs, timestamps, hashes, schema-validated summaries). No raw-payload access required. Covers Patterns 1-8, 10, 11.
+   - **Metadata-driven (default)**: works on event metadata only (event type, IDs, timestamps, hashes, schema-validated summaries). No raw-payload access required. Covers Patterns 1-8 and 10-13.
    - **Content-aware (opt-in per pattern)**: requires payload features from M-12's restricted raw-payload archive when retained per M-12's forensic floor. Covers Pattern 9 (output-content drift). Operators must explicitly grant the M-11 detector restricted-archive read access for this mode.
 2. **Cross-event / session analytics, not per-invocation baselining** — M-11's analytical surface is *cross-event*: prompt-lineage shifts, cross-tool sequences, identity drift, memory→action chains, content drift. Per-invocation rate / volume / cardinality / destination baselining is **M-70's job**; M-11 calls into M-70's outputs (e.g., "did M-70 alert on rate spike for this actor?") rather than re-implementing rate baselining.
 3. **Adaptive baselining with anti-poisoning controls** — M-11 transitions from hardcoded prior-art rules to per-tenant adaptive thresholds with explicit poisoning controls (see *Anti-poisoning controls* below). Adaptive baselining without these controls is unsafe — sustained low-volume malicious traffic will normalize attacker-shaped behavior.
@@ -78,6 +78,8 @@ See also — additional citing techniques whose Mitigation Strategies reference 
    │  detector           │  ←──── M-70 features ────│  baseliner +         │
    │  (real-time rules)  │  ←──── M-22 outcomes ────│  shadow baseliner    │
    │                     │  ←──── M-69 decisions ───│  (with anti-poison)  │
+   │                     │  ←─ M-20 alerts (when ───│                      │
+   │                     │      M-20 expanded)      │                      │
    └──────────┬──────────┘                          └──────────────────────┘
               │ alerts                                          │ baseline drift signal
               ▼                                                 ▼
@@ -98,20 +100,23 @@ Each detection pattern requires specific M-12 fields. Where M-12's current schem
 |---|---|
 | 1 (T1001 tool-poisoning behavioral signature) | `tool_description_loaded.tool_description_sha256`, `previous_sha256`; subsequent `tool_invocation` event chain joined by `session_id` |
 | 2 (T1102 / T1309 prompt-injection signatures) | `prompt_lineage.preceding_turns_hash_chain`, `context_structure.items[].source_type` |
-| 3 (T1106 identical-call loops) | `tool_invocation.request_metadata.args_summary` (hash) over rolling time window |
+| 3 (T1106 identical-call loops) | `tool_invocation.request_metadata.args_hash` (canonicalized-args hash) over rolling time window (Feature Request for M-12 v1.2: M-12 v1.1 replaced the original `args_summary` with structured `args_field_tree` for SAFE-M-70 cardinality features; add `args_hash` for value-equivalence detection — `args_field_tree` is structure-only and would alias value-different but shape-identical calls) |
 | 4 (T1202 OAuth lifecycle, location-anomalous reuse) | `auth_operation.op` / `subject` / `device_fingerprint` / `correlation_token` / **`geo_hint`** / `source_ip` (Feature Request for M-12 v1.1: ensure `geo_hint` and `source_ip` are populated when available) |
-| 5 (T1302 / T1303 identity drift) | `tool_invocation.actor.runtime_identity` field stability — `effective_uid`, `service_account`, `container_id`, `cwd`, `mounts` |
+| 5 (T1302 / T1303 identity drift) | `tool_invocation.actor` field stability — `effective_uid`, `service_account`, `container_id`, `cwd`, `mounts` (per SAFE-M-12 Principle 3, these are direct keys on the `actor` block, not nested under a `runtime_identity` sub-key) |
 | 6 (T1309 external-content → privileged) | `prompt_lineage.context_structure` with `source_type=tool_response` directly preceding privileged `tool_invocation` |
 | 7 (T1401 context-window ordering) | `context_structure.items` ordering distribution |
 | 8 (T1702 memory→sensitive-action) | `tool_invocation` with `tool_name` matching memory-retrieval pattern → subsequent privileged `tool_invocation` chain joined by `session_id` |
 | 9 (T1904 / T2105 content drift) | **Requires retained `llm_output_ref` archive content** (forensic-floor-retained or policy-retained); not metadata-only |
 | 10 (T1911 parameter entropy) | `tool_invocation.request_metadata.args_size_bytes` and **`args_entropy_estimate`** (Feature Request for M-12 v1.1: add an `args_entropy_estimate` field to `request_metadata`; without it M-11 can only baseline size, not entropy) |
-| 11 (T2102 fan-out / spend / endpoint volume) | `tool_invocation.cost_estimate` / `tokens_in` / `tokens_out` / **`endpoint`** (the destination URL or host being called) aggregated per actor + endpoint set; consumes M-70's per-actor invocation baselines |
+| 11 (T2102 fan-out / spend / endpoint volume) | `tool_invocation.cost_estimate` / `tokens_in` / `tokens_out` / `destination` (the external sink URL or host being called, per SAFE-M-12 v1.1) aggregated per actor + endpoint set; consumes M-70's per-actor invocation baselines |
+| 12 (T1112 sampling-then-sensitive-action) | `tool_invocation` events for sampling-request logging (per SAFE-M-12 Principle 2, T1112's sampling-request capture is folded under `tool_invocation` with the `approval` field carrying granted/denied state) + subsequent `tool_invocation` chain via `session_id` |
+| 13 (T1803 bulk-export with coercion-context) | M-70's bulk-export alerts (per-invocation `response_metadata.row_count` and `destination` baselines) + preceding `prompt_lineage.context_structure` items, joined by `session_id` |
 
 ### Prerequisites
 
 - [SAFE-M-12](../SAFE-M-12/README.md) *Audit Logging* deployed with the structured-event schema. M-11 has no signal to consume otherwise.
-- [SAFE-M-70](../SAFE-M-70/README.md) *Detective Control - Tool-Invocation Anomaly Detection & Baselining* deployed. Patterns 4 and 11 specifically consume M-70's per-tool / per-actor baselines as input features rather than reproducing them.
+- [SAFE-M-70](../SAFE-M-70/README.md) *Detective Control - Tool-Invocation Anomaly Detection & Baselining* deployed. Pattern 11 and Pattern 13 consume M-70's per-tool / per-actor baselines (specifically, M-70 Rules A and C — the result-row and destination-first-seen rules) as input features rather than reproducing them. Pattern 12 operates directly on M-12's `tool_invocation` event stream and does not require an M-70 baseline.
+- Pattern 4 (OAuth lifecycle anomaly) operates directly on M-12's `auth_operation` event stream (op `issue` / `refresh` / `revoke` / `use`, plus `subject`, `device_fingerprint`, `geo_hint`, `correlation_token` per M-12 Principle 4); it does not depend on an upstream baselining mitigation. `source_ip` remains a Feature Request to M-12 v1.2 (the Pattern 4 Telemetry prereq row carries the same FR note); concurrent-reuse and post-logout-use detection work without it, but cross-continent geo-anomaly detection benefits from it. [SAFE-M-20](../SAFE-M-20/README.md) is the canonical OAuth-layer anomaly detection mitigation, but is currently a stub (implementation `[To be documented]`); when M-20 is fully developed it can serve as a complementary feature source for Pattern 4. Pattern 4 must NOT be routed through M-70 — M-70's input contract is `tool_invocation` events (per M-70 README §Prerequisites), so OAuth ops on the `auth_operation` stream are not visible to it.
 - A streaming or near-real-time analytics platform (Splunk, Elastic, Loki+Promtail, or equivalent) with rule-based + ML-based detection.
 - An alerting mechanism with an operator triage UX (M-11 alert → M-12 raw-archive pivot via `correlation_id`).
 - A suppression-policy store with expiry, owner, and audit guarantees (per Core Principle 5).
@@ -125,10 +130,10 @@ Each detection pattern requires specific M-12 fields. Where M-12's current schem
    - Identify cross-mitigation feature consumers (M-70 alerts, M-22 outcomes, M-69 decisions) and the join keys (`session_id`, `correlation_id`, `actor.service_account`).
 
 2. **Development Phase**:
-   - Implement the metadata-driven detection rules (Patterns 1-8, 10, 11) against the M-12 SIEM tier first; defer content-aware Pattern 9 until the restricted-archive integration is hardened.
+   - Implement the metadata-driven detection rules (Patterns 1-8 and 10-13) against the M-12 SIEM tier first; defer content-aware Pattern 9 until the restricted-archive integration is hardened.
    - Implement the live and shadow baselines as parallel pipelines. The shadow baseline trains on a rolling 7- to 14-day delayed window of confirmed-clean events; the live baseline trains on the rolling 24- to 48-hour fresh window.
    - Implement the suppression API with audit-event emission to M-12.
-   - Integrate M-70 / M-22 / M-69 feature consumption.
+   - Integrate M-70 / M-22 / M-69 feature consumption (and M-20 once it is expanded beyond stub state).
 
 3. **Deployment Phase**:
    - Roll out in observe-only mode (rules fire to a staging SIEM; no operator-visible alerts) for the burn-in period (~2-4 weeks) so the live baseline can stabilize.
@@ -142,15 +147,26 @@ Each detection pattern requires specific M-12 fields. Where M-12's current schem
 |---|---|---|---|---|---|
 | 1 | Tool-poisoning behavioral signature | T1001 | tool_description_loaded chain + invocation chain | Rule-based: poisoned-description hash on a session that subsequently invokes a privileged tool | Frozen reference window for first-use of any tool description |
 | 2 | Prompt-injection signature (context switch / unrelated command / unstated-instruction acknowledgment) | T1102, T1309 | prompt_lineage, context_structure | Heuristic + ML on lineage transitions | Hard-floor rule for acknowledgment-of-unstated-instructions; no adaptive suppression |
-| 3 | Identical-call loops / cyclic graphs | T1106 | tool_invocation.args_summary hash over window | Rule-based: ≥ N identical calls within W seconds, or A → B → A cycle ≥ M times | Whitelist legitimate retry loops with explicit owner+expiry suppressions |
-| 4 | OAuth lifecycle anomaly (concurrent reuse, location-anomalous reuse, post-logout use) | T1202 | auth_operation.op + subject + device_fingerprint + geo_hint + source_ip | Rule-based: post-logout `use`, concurrent reuse from disparate geos | Hard-floor for cross-continent concurrent reuse |
-| 5 | Runtime-identity drift | T1302, T1303 | tool_invocation.actor.runtime_identity field stability | Rule-based: any change in effective_uid, service_account, container_id, or mount set within session | Hard-floor; no adaptive suppression |
+| 3 | Identical-call loops / cyclic graphs | T1106 | tool_invocation.request_metadata.args_hash over window (FR for M-12 v1.2 — see Telemetry prerequisites Pattern 3) | Rule-based: ≥ N identical calls within W seconds, or A → B → A cycle ≥ M times | Whitelist legitimate retry loops with explicit owner+expiry suppressions |
+| 4 | OAuth lifecycle anomaly (concurrent reuse, location-anomalous reuse, post-logout use) | T1202 | auth_operation.op + subject + device_fingerprint + geo_hint + correlation_token (per M-12 Principle 4); `source_ip` is a Feature Request to M-12 v1.2 — see Pattern 4 Telemetry prereq | Rule-based: post-logout `use`, concurrent reuse from disparate geos | Hard-floor for cross-continent concurrent reuse |
+| 5 | Runtime-identity drift | T1302, T1303 | tool_invocation.actor field stability (effective_uid / service_account / container_id / cwd / mounts — direct keys on actor per SAFE-M-12 Principle 3) | Rule-based: any change in effective_uid, service_account, container_id, or mount set within session | Hard-floor; no adaptive suppression |
 | 6 | External-content → privileged-tool correlation | T1309 | prompt_lineage.context_structure source_type=tool_response → privileged tool_invocation | Rule-based: privileged tool call within K events of a tool_response context item | Operator allowlist for known automation patterns; suppressions expire |
 | 7 | Context-window ordering anomalies | T1401 | context_structure.items ordering distribution | Statistical: per-actor ordering distribution diverges from baseline | Shadow-baseline drift alarm catches gradual reordering |
 | 8 | Memory-retrieval → sensitive-action chain | T1702 | tool_invocation chain via session_id | Rule-based: memory-retrieval tool → privileged tool within K events | Hard-floor for first-time-in-session retrieval-then-privileged |
 | 9 | Output-content drift / backchannel signal | T1904, T2105 | llm_output_ref archive content (content-aware mode required) | ML: output embedding drift from baseline; cross-correlation with downstream_actions | Content-aware mode operational coupling — patterns degrade if M-12 retention policy excludes outputs |
 | 10 | Parameter entropy / size anomaly | T1911 | tool_invocation.request_metadata.args_size_bytes + args_entropy_estimate | Statistical: per-tool entropy / size baseline + threshold | Feature Request for M-12 v1.1: `args_entropy_estimate` field; until then M-11 can only baseline size |
-| 11 | Anomalous fan-out / spend / endpoint volume | T2102 | tool_invocation.cost_estimate / tokens / endpoint per actor | Consumes M-70's per-actor invocation baseline; M-11 layers spend / fan-out + endpoint-set anomaly | Shadow baseline + frozen reference window for new endpoints |
+| 11 | Anomalous fan-out / spend / endpoint volume | T2102 | tool_invocation.cost_estimate / tokens / destination per actor (per SAFE-M-12 v1.1 the field is `destination`, not `endpoint`) | Consumes M-70's per-actor invocation baseline; M-11 layers spend / fan-out + destination-set anomaly | Shadow baseline + frozen reference window for new destinations |
+| 12 | Sampling-then-sensitive-action correlation | T1112 | tool_invocation events for sampling-request logging (per M-12 Principle 2) with the `approval` field + subsequent tool_invocation chain via session_id | Rule-based: ≥ N approved sampling requests within window, followed by sensitive `tool_invocation` (privileged tool, large `response_metadata.row_count`, or new `destination`) within K events | Hard-floor for first-time-in-session sampling→privileged-tool chain; suppressions for known automation that legitimately triggers sampling-then-action |
+| 13 | Bulk-export with coercion-context correlation | T1803 | M-70 bulk-export alert (large `response_metadata.row_count` and/or new `destination`) + preceding `prompt_lineage.context_structure` items in the same session | Rule-based: M-70 bulk-export alert AND preceding `source_type=tool_response` or memory-retrieval context within K events in the same session | Hard-floor for first-time-in-session bulk export to a new `destination`; whitelist scheduled batch jobs with explicit owner+expiry suppressions |
+
+## Out of scope
+
+Several techniques cite SAFE-M-11 with non-matching control concepts or appear in earlier audit drafts but are not present in the citation graph. They are excluded from the curated Mitigates list:
+
+- **SAFE-T1305** (cited as "User Namespace Isolation"). M-11 is Behavioral Monitoring, not isolation; the citation is a systematic-substitution misdirection. The same misdirection appears against SAFE-M-12, tracked as `t1305-m12-misdirection-fix` in the upstream PR ledger.
+- **SAFE-T1101** and **SAFE-T1701**. Listed as M-11 citers in earlier audit drafts, but a fresh grep against `techniques/SAFE-T1101/README.md` and `techniques/SAFE-T1701/README.md` confirms neither file references SAFE-M-11. Removed as phantom citations.
+
+The 14 additional citing techniques in the Mitigates "See also" subsection reference SAFE-M-11 with generic "Behavioral Monitoring" framing only; their specific concerns are subsumed by Patterns 1-13 above and do not need dedicated rows. They are listed there for traceability.
 
 ## Benefits
 
@@ -169,7 +185,7 @@ Each detection pattern requires specific M-12 fields. Where M-12's current schem
 - **Whitelist sprawl** is itself a risk — suppression governance addresses this but requires discipline. Expired suppressions auto-deactivate; review cadence is mandatory.
 - **Rule-bound coverage** — novel attacks not in the rule set are invisible until added. Post-incident pattern authoring is a real cost; budget for it.
 - **Content-aware operational coupling** — Pattern 9 requires the M-12 forensic floor to retain `llm_output_ref` payloads. If retention is conservative, Pattern 9 degrades to metadata-only and loses backchannel-detection capability.
-- **M-70 dependency** — Patterns 4 and 11 consume M-70's features. If M-70 is not deployed, those patterns alert spuriously or degrade. Prerequisite is documented; deployment order matters.
+- **Cross-mitigation dependency** — Pattern 11 and Pattern 13 consume M-70's per-tool baselines (Rules A / C). If M-70 is not deployed, those patterns alert spuriously or degrade. Pattern 4 (OAuth) operates standalone on M-12's `auth_operation` stream; once SAFE-M-20 is fully developed (currently a stub) it can serve as a complementary feature source. Pattern 12 (T1112 sampling) operates standalone on M-12's `tool_invocation` stream. Prerequisites and deployment order matter.
 
 ## Implementation Examples
 
@@ -202,7 +218,7 @@ The 30-second window is operator-tunable; the hard floor is "ever, in this sessi
 sequence by session_id with maxspan=5m
   [tool_invocation where tool_name in ("memory.retrieve", "vector_store.query", "kv.get")]
   [tool_invocation where
-     actor.runtime_identity.effective_uid in ("0", "root", "admin") and
+     actor.effective_uid in ("0", "root", "admin") and
      event.outcome != "policy_violation"]
 ```
 
@@ -217,14 +233,14 @@ class IdenticalCallLoopDetector:
     def __init__(self, window_seconds=60, threshold=10):
         self.window = window_seconds
         self.threshold = threshold
-        self.recent_calls = {}  # actor → deque of (timestamp, args_summary_hash)
+        self.recent_calls = {}  # actor → deque of (timestamp, args_hash)
 
     def observe(self, event):
         if event["event_type"] != "tool_invocation":
             return None
         actor = event["actor"]["service_account"]
         ts = event["timestamp_utc"]
-        args_hash = event["request_metadata"]["args_summary"]  # already hashed by M-12 emitter
+        args_hash = event["request_metadata"]["args_hash"]  # canonicalized-args hash from M-12 (FR for v1.2)
         q = self.recent_calls.setdefault(actor, deque())
         q.append((ts, args_hash))
         # Drop entries outside the window
@@ -243,7 +259,7 @@ class IdenticalCallLoopDetector:
         return None
 ```
 
-This is a metadata-only detector — it never reads the raw request body; it works on M-12's `args_summary` hash field. The threshold and window are operator-tunable; suppressions for legitimate retry loops are applied upstream.
+This is a metadata-only detector — it never reads the raw request body; it works on M-12's `args_hash` field (a canonicalized-args content hash; Feature Request for M-12 v1.2 — see Pattern 3 Telemetry prerequisites). The threshold and window are operator-tunable; suppressions for legitimate retry loops are applied upstream.
 
 ### Example 4: Anti-poisoning shadow-baseline drift alarm
 
@@ -341,3 +357,4 @@ General behavioral-monitoring guidance is well-established in industry framework
 | 0.1 | 2025-01-03 | Initial stub | Frederick Kautz |
 | 0.2 | 2025-01-09 | Added explicit prompt injection monitoring | Frederick Kautz |
 | 1.0 | 2026-04-30 | Expanded stub to template parity per corpus mitigation quality audit; authored Technical Implementation (5 Core Principles, Anti-poisoning controls, Architecture, per-pattern Telemetry prerequisites, Prerequisites, Implementation Steps), Detection Patterns (11-pattern table covering 14 directly-mapped citing techniques), Benefits, Limitations, Implementation Examples (Splunk SPL T1309, Elastic EQL T1702, Python streaming T1106, anti-poisoning shadow-baseline drift alarm), Testing and Validation, Deployment Considerations, Current Status sections; curated Mitigates list against actual citation graph (excluded T1305 misdirection, removed phantom T1101 / T1701 entries) | bishnu bista |
+| 1.1 | 2026-05-03 | Added Patterns 12 (T1112 sampling-then-sensitive-action correlation) and 13 (T1803 bulk-export with coercion-context correlation) — both previously claimed in Mitigates but undocumented in the patterns and telemetry tables. Pattern 13 layers atop M-70 Rules A and C; Pattern 12 operates directly on M-12's `tool_invocation` event stream (per M-12 Principle 2 which folds T1112 sampling-request logging under `tool_invocation` with the `approval` field) — corrected an early draft that incorrectly cited M-70 sampling-rate alerts (M-70 has no such alert) and `auth_operation` events for sampling approvals (M-12 reserves `auth_operation` for OAuth lifecycle only). Removed Pattern 4's incorrect M-70 dependency: Pattern 4 (OAuth lifecycle anomaly) operates standalone on M-12's `auth_operation` event stream (M-12 Principle 4 — `op`, `subject`, `device_fingerprint`, `geo_hint`, `correlation_token` — sufficient for concurrent-reuse and post-logout-use detection without external baselining; `source_ip` remains a Feature Request to M-12 v1.2 per the existing Pattern 4 Telemetry prereq note). SAFE-M-20 (currently a stub with implementation `[To be documented]`) is documented as a complementary feature source for when M-20 is expanded. Updated Prerequisites, Limitations, Architecture diagram, and Implementation Steps to reflect Patterns 1-8 and 10-13 metadata-driven coverage. Aligned schema field names with SAFE-M-12 v1.1: `args_summary` → `args_hash` (Feature Request for M-12 v1.2 — `args_field_tree` is structure-only and would alias value-different but shape-identical calls, defeating T1106 detection); `actor.runtime_identity.effective_uid` → `actor.effective_uid` (M-12 has never had a `runtime_identity` wrapper — direct keys on the actor block); `endpoint` → `destination` (per M-12 v1.1 Principle 2). Field-name fixes applied in Telemetry prerequisites table, Detection Patterns table, Example 2 EQL, and Example 3 Python. Added `## Out of scope` section to back the existing "see Out of scope" reference in the Mitigates intro. | bishnu bista |
