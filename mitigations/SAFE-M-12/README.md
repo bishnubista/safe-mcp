@@ -34,14 +34,14 @@ See also (additional techniques whose Mitigation Strategies reference SAFE-M-12 
 
 ### Core Principles
 
-The audit-logging layer emits structured events at six functional categories. Every event carries `session_id`, `actor` (see Principle 3), `timestamp_utc`, `correlation_id`, and `archive_ref` (set when raw-payload retention fires per the retention rule below).
+The audit-logging layer emits structured events at six functional categories. Every event carries the universal envelope: `session_id`, `tenant`, `user_id` (the logical principal — distinct from the runtime-identity `actor` block in Principle 3, which captures privilege/context for escalation analysis), `agent_id` (the LLM agent or service driving the call; `null` for human-direct events), `actor` (see Principle 3), `timestamp_utc`, `correlation_id`, `outcome` (`success` / `error` / `policy_violation`), and `archive_ref` (set in-event when raw-payload retention fires per the retention rule below; `null` otherwise).
 
 1. **Tool-description and server-registration events** (T1001, T1201, T1601) — emit structured events for the full lifecycle of tool descriptions and MCP server presence:
    - `event_type="tool_description_loaded"` with `mcp_server`, `tool_name`, `tool_description_sha256`, `tool_description_version`, `loaded_at`, `previous_sha256` (for rug-pull detection per T1201).
    - `event_type="server_registered"` / `"server_deregistered"` / `"server_probed"` (T1601 enumeration detection) with `mcp_server`, `endpoint`, `actor`, `probe_attempt_count_window`, `result` (success / auth-failure / timeout). Probe events MUST include rate metadata so M-11 / M-70 can baseline normal probing vs scanning.
-   - The tool-description body itself is captured to the restricted archive only when policy retains it (see retention rule below).
+   - The tool-description body itself is captured to the restricted archive on first-load (`previous_sha256 == null`) and on version-shift (`previous_sha256 != tool_description_sha256`) events as a forensic-floor guarantee — T1001 / T1201 reviewers need the actual body to inspect for poisoning, not just a hash. Other load events (steady-state re-fetches with unchanged hash) follow operator-tunable retention.
 
-2. **Tool-invocation events** (T1112) — for every tool call: `event_type="tool_invocation"`, `tool_name`, `mcp_server`, `request_metadata` (size, schema-validated args summary — *not* raw args), `response_metadata` (size, status, latency, token counts), `approval` (granted / denied + by whom + via M-69 if used), `cost_estimate`, `tokens_in`, `tokens_out`. Raw request/response bodies are captured to the restricted archive only when the retention policy says so.
+2. **Tool-invocation events** (T1112; canonical input substrate for SAFE-M-70's per-entity baselining) — for every tool call: `event_type="tool_invocation"`, plus the universal envelope (`tenant`, `user_id`, `agent_id`, `session_id`, `actor`, `timestamp_utc`, `correlation_id`, `outcome`, `archive_ref`), plus `tool_name`, `mcp_server`, `request_metadata` (`args_size_bytes`; `args_field_tree` — a structure-only summary preserving key names, types, and nesting depth so SAFE-M-70 can compute argument-cardinality features without retaining raw values; `schema_validated`), `response_metadata` (`size_bytes`; `row_count` — present whenever the tool returns a row-shaped result, required for SAFE-M-70's bulk-export detection per SAFE-T1803; `status`; `latency_ms`; `tokens_in`; `tokens_out`), `destination` (the external sink the tool writes to or queries — e.g. `s3://...`, `bq://project.dataset.table`, `https://api.example.com/...`, or `null` for in-memory tools; required for SAFE-M-70's first-seen-destination rule), `approval` (granted / denied + by whom + via M-69 if used), `cost_estimate`. The `(tenant, user_id, agent_id, tool_name)` quadruple plus the metadata above is the documented input contract for [SAFE-M-70 Prerequisites](../SAFE-M-70/README.md#prerequisites) — schema changes here must remain compatible with that contract. Raw request/response bodies are captured to the restricted archive only when the retention policy says so.
 
 3. **Effective runtime identity** (T1302, T1303) — every event carries an `actor` field of the form:
 
@@ -106,13 +106,15 @@ Downstream log sources to correlate against (per T1803): DB audit logs (`pg_audi
 
 ### Retention Rule
 
-Raw payloads are retained **selectively under policy**. The SIEM stream always carries the structured event with `archive_ref` set to a real archive locator when retention fired or `null` when it did not. Within that selective-retention model, the following triggers form a **forensic floor** that always retains, regardless of operator-defined sampling:
+Raw payloads are retained **selectively under policy**. The SIEM stream always carries the structured event with `archive_ref` set **in-event** to a real archive locator when retention fired (analysts reading the primary event must not need to wait for or join against a follow-up event for the link), or `null` when it did not. Within that selective-retention model, the following triggers form a **forensic floor** that always retains, regardless of operator-defined sampling:
 
 - `event.outcome == error` — any tool-invocation that errored or timed out
 - `event.outcome == policy_violation` — a redaction policy, M-69 OOB-auth denial, or schema-validation failure fired
 - `event.security_tag == true` — session or invocation explicitly marked for elevated retention by an operator or detection rule
+- `event_type == "tool_description_loaded"` AND `previous_sha256 == null` — first-load of a tool description (T1001 surface; reviewers need the body, not just a hash)
+- `event_type == "tool_description_loaded"` AND `previous_sha256 != tool_description_sha256` — version-shift of a tool description (T1201 rug-pull surface; reviewers need the new body alongside the old one)
 
-Beyond these mandatory triggers, retention is operator-tunable per data-classification policy: first-load, version-shift, sampled fraction, or custom triggers are all valid additions. The forensic-floor triggers cannot be opted out — they are the minimum guarantee the rest of the corpus's detective controls assume.
+Beyond these mandatory triggers, retention is operator-tunable per data-classification policy: sampled fraction, per-tool-sensitivity overrides, or custom triggers are all valid additions. The forensic-floor triggers cannot be opted out — they are the minimum guarantee the rest of the corpus's detective controls assume.
 
 ### Prerequisites
 
@@ -133,7 +135,7 @@ Beyond these mandatory triggers, retention is operator-tunable per data-classifi
    - Instrument the MCP host's tool dispatcher to emit `tool_description_loaded`, `tool_invocation`, `server_registered` / `_deregistered` / `_probed`, and `server_connection` events at the canonical junctions.
    - Instrument the agent's prompt construction and response consumption paths to emit `prompt_lineage`, `context_structure`, `llm_output_ref`, and `downstream_actions` events.
    - Implement the two-tier emit: every event flows to the SIEM stream synchronously (or near-synchronously); raw payloads are routed to the restricted archive only when the policy classifier fires retention.
-   - Implement the forensic-floor classifier: errors, policy violations, and security-tagged sessions force retention even when operator-tunable sampling would not.
+   - Implement the forensic-floor classifier: errors, policy violations, security-tagged sessions, and tool-description first-load / version-shift events force retention even when operator-tunable sampling would not.
 
 3. **Deployment Phase**:
    - Roll out in **observe-only** mode first (events emit but no downstream consumers alarm) and validate that redaction is firing correctly before opening SIEM access to broad analyst groups.
@@ -166,50 +168,59 @@ Beyond these mandatory triggers, retention is operator-tunable per data-classifi
 import hashlib, json, time, uuid
 
 def emit_tool_invocation(host_ctx, tool_call, response, approval, classifier):
+    correlation_id = str(uuid.uuid4())
     event = {
         "event_type": "tool_invocation",
-        "session_id": host_ctx.session_id,
-        "correlation_id": str(uuid.uuid4()),
-        "timestamp_utc": time.time(),
-        "tool_name": tool_call.name,
-        "mcp_server": tool_call.server,
+        # Universal envelope
+        "session_id":     host_ctx.session_id,
+        "tenant":         host_ctx.tenant,
+        "user_id":        host_ctx.user_id,           # logical principal
+        "agent_id":       host_ctx.agent_id,          # null for human-direct
+        "actor":          host_ctx.runtime_identity(),  # runtime identity, see Principle 3
+        "timestamp_utc":  time.time(),
+        "correlation_id": correlation_id,
+        "outcome":        response.outcome,           # "success" | "error" | "policy_violation"
+        "archive_ref":    None,                       # set below if retention fires
+        # Event-specific fields (also the SAFE-M-70 input contract)
+        "tool_name":      tool_call.name,
+        "mcp_server":     tool_call.server,
         "request_metadata": {
             "args_size_bytes": len(json.dumps(tool_call.args)),
-            "args_summary": classifier.summarize_args(tool_call.args),  # NOT raw
+            "args_field_tree": classifier.field_tree(tool_call.args),  # structure only — no raw values
             "schema_validated": True,
         },
         "response_metadata": {
-            "size_bytes": len(response.body or b""),
-            "status": response.status,
-            "latency_ms": response.latency_ms,
-            "tokens_in": response.tokens_in,
-            "tokens_out": response.tokens_out,
+            "size_bytes":  len(response.body or b""),
+            "row_count":   response.row_count,        # required for SAFE-M-70 bulk-export detection (T1803)
+            "status":      response.status,
+            "latency_ms":  response.latency_ms,
+            "tokens_in":   response.tokens_in,
+            "tokens_out":  response.tokens_out,
         },
+        "destination":    response.destination,       # e.g. "s3://...", "bq://...", or None
         "approval": {
-            "granted": approval.granted,
-            "decided_by": approval.decided_by,
+            "granted":       approval.granted,
+            "decided_by":    approval.decided_by,
             "via_safe_m_69": approval.via_oob_auth,
         },
-        "actor": host_ctx.runtime_identity(),  # see Principle 3
-        "outcome": response.outcome,           # "success" | "error" | "policy_violation"
-        "security_tag": host_ctx.security_tag,
+        "cost_estimate":  response.cost_estimate,
+        "security_tag":   host_ctx.security_tag,
     }
 
-    # SIEM tier: always emit metadata
-    siem.emit(event)
-
-    # Restricted archive: only when retention policy says so
+    # Restricted archive first (when retention policy says so), so the primary
+    # SIEM event carries archive_ref in-band — no follow-up event to join against.
     if classifier.should_retain_raw(event, tool_call, response):
-        archive_ref = restricted_archive.write(
+        event["archive_ref"] = restricted_archive.write(
             payload={"args": tool_call.args, "response_body": response.body},
             session_id=host_ctx.session_id,
-            correlation_id=event["correlation_id"],
+            correlation_id=correlation_id,
         )
-        # Update the SIEM event with the back-reference
-        siem.emit({"event_type": "raw_archive_ref", "correlation_id": event["correlation_id"], "archive_ref": archive_ref})
+
+    # SIEM tier: emit the complete metadata event (with archive_ref already attached if set).
+    siem.emit(event)
 ```
 
-The `classifier.should_retain_raw` enforces the retention rule. Errors, policy violations, and security-tagged sessions short-circuit it to `True` regardless of operator sampling.
+The `classifier.should_retain_raw` enforces the retention rule. Errors, policy violations, security-tagged sessions, and `tool_description_loaded` events with `previous_sha256 == null` (first-load) or `previous_sha256 != tool_description_sha256` (version-shift) short-circuit it to `True` regardless of operator sampling. Production code should also define an explicit fail-mode for `restricted_archive.write` failures (fail-closed: drop the SIEM event and alert; fail-open: emit with `archive_ref=null` and a `retention_failure=true` tag) — the example above does not specify one and would silently fail-closed by raising.
 
 ### Example 2: Tool-description load event
 
@@ -217,6 +228,9 @@ The `classifier.should_retain_raw` enforces the retention rule. Errors, policy v
 {
   "event_type": "tool_description_loaded",
   "session_id": "s-2026-04-30-hgz",
+  "tenant": "acme-prod",
+  "user_id": "svc-mcp-host",
+  "agent_id": null,
   "correlation_id": "c-7f3a-...",
   "timestamp_utc": 1714435200,
   "mcp_server": "github-mcp-prod",
@@ -230,7 +244,7 @@ The `classifier.should_retain_raw` enforces the retention rule. Errors, policy v
 }
 ```
 
-The body of the tool description itself is at `archive_ref`, retained because `previous_sha256 != tool_description_sha256` triggered the version-shift retention rule.
+The body of the tool description itself is at `archive_ref`, mandatorily retained because `previous_sha256 != tool_description_sha256` matches the version-shift forensic-floor trigger (T1201 rug-pull surface). First-load events (`previous_sha256 == null`) trigger the same floor (T1001 surface).
 
 ### Example 3: Redacted prompt-lineage event for T1309 coercion reconstruction
 
@@ -238,6 +252,9 @@ The body of the tool description itself is at `archive_ref`, retained because `p
 {
   "event_type": "prompt_lineage",
   "session_id": "s-2026-04-30-hgz",
+  "tenant": "acme-prod",
+  "user_id": "alice@acme.example",
+  "agent_id": "research-assistant-v3",
   "correlation_id": "c-2b8f-...",
   "timestamp_utc": 1714435210,
   "user_turn_index": 7,
@@ -311,7 +328,7 @@ The two pipelines have **different IAM scopes**: the SIEM pipeline runs under a 
 2. **Functional Testing**:
    - Generate realistic load (1k tool invocations / minute) and verify SIEM ingest latency stays under target (e.g., p95 < 5 seconds).
    - Verify redaction correctness: emit synthetic events containing known-secret strings (test API tokens, fake PII) and assert they do *not* appear in the SIEM stream and *do* appear (encrypted) in the restricted archive.
-   - Verify the forensic-floor: emit synthetic `error` and `policy_violation` events with sampling set to 0%; assert raw-payload retention still fires.
+   - Verify the forensic-floor: with sampling set to 0%, emit synthetic `error` and `policy_violation` events plus a `tool_description_loaded` event with `previous_sha256 == null` (first-load) and another with `previous_sha256 != tool_description_sha256` (version-shift); assert raw-payload retention still fires for all four cases.
 
 3. **Integration Testing**:
    - End-to-end trace: fire a database-export tool call (T1803) through the host, query the SIEM for the `tool_invocation` event, and verify the `correlation_id` joins to a corresponding `pg_audit` row in the DB log and an S3 `PutObject` event in the bucket log.
@@ -335,7 +352,7 @@ The two pipelines have **different IAM scopes**: the SIEM pipeline runs under a 
 - **SIEM ingest failures**: alarm on rejected-event rates > target.
 - **Retention-policy version skew**: alarm if MCP host's policy version differs from the policy store's published version.
 - **Restricted-archive access anomalies**: alarm on unusual read patterns against the raw archive (M-12 protects the audit trail; the audit trail itself must be audited).
-- **Forensic-floor regression**: alarm if `error` or `policy_violation` events ever land with `archive_ref == null`.
+- **Forensic-floor regression**: alarm if any forensic-floor event lands with `archive_ref == null` — `outcome == error`, `outcome == policy_violation`, `security_tag == true`, or `tool_description_loaded` with first-load (`previous_sha256 == null`) or version-shift (`previous_sha256 != tool_description_sha256`) state.
 
 ## Current Status (2026)
 
@@ -363,3 +380,4 @@ Tamper-evident logging guidance for general systems is well-established ([NIST S
 |---------|------|---------|--------|
 | 0.1 | 2025-01-03 | Initial stub | Frederick Kautz |
 | 1.0 | 2026-04-30 | Expanded stub to template parity per corpus mitigation quality audit; authored Technical Implementation (6 Core Principles tied to citing-technique expectations T1001/T1112/T1201/T1202/T1302/T1303/T1309/T1401/T1407/T1601/T1803/T1904/T2105), Architecture Components, Retention Rule with forensic-floor triggers, Benefits, Limitations, Implementation Examples (4, including redacted-event examples), Testing and Validation, Deployment Considerations, Current Status, References, Related Mitigations sections; curated Mitigates list (13 IDs across 12 entries); excluded T1305 (misdirected citation — separate follow-up PR) and T1408 (stale post-PR-#200) | bishnu bista |
+| 1.1 | 2026-05-03 | Aligned `tool_invocation` schema with the documented [SAFE-M-70 input contract](../SAFE-M-70/README.md#prerequisites): added `tenant`, `user_id`, `agent_id` to the universal envelope; replaced opaque `args_summary` with structured `args_field_tree` for SAFE-M-70 cardinality features; added `response_metadata.row_count` for SAFE-T1803 bulk-export detection; added top-level `destination` for first-seen-destination rule. Fixed `archive_ref` ordering in Example 1 — primary SIEM event now carries `archive_ref` in-band rather than as a follow-up `raw_archive_ref` event. Promoted tool-description first-load and version-shift to forensic-floor retention triggers (T1001 / T1201 reviewers need bodies, not just hashes); back-propagated to Implementation Steps, Functional Testing, Examples 2 and 3, post-Example 1 prose, and the Monitoring forensic-floor regression alarm. Documented an explicit fail-mode requirement for `restricted_archive.write` failures in production. | bishnu bista |
