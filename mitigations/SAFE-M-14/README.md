@@ -57,14 +57,21 @@ For citing techniques excluded from this curated list, see the `## Out of scope`
            └───────── on any phase failure → SAFE-M-12 audit event ─┘
 ```
 
+### Prerequisites
+
+Hard prerequisites — M-14 cannot make policy decisions without these:
+
+- **A registry of permitted endpoint strings** (hostnames, domains, OAuth issuer URLs) with explicit ownership and review cadence per entry. The registry is M-14's own state and must be populated before the policy can ADMIT any connection. The schema separates `servers` (matched by host[:port]) from `oauth_authorization_servers` (matched by scheme+host+port+path per RFC 8414); the two namespaces canonicalize differently and cannot share entries.
+- **A connection-establishment hook in the MCP client** where the policy can be evaluated *before* any TCP / TLS handshake or HTTP request to the target endpoint. Without this hook the policy decision cannot precede the network exchange and Phase 1 of the enforcement model is unenforceable.
+
 ### Recommended Companions
 
-M-14 is functional standalone — an allowlist policy decision over endpoint strings does not require any of the following to be operational. The companions below extend M-14's coverage to threat surfaces M-14 does not address. None is a hard blocker.
+M-14 is functional standalone — none of the following is a hard prerequisite. The companions below extend M-14's coverage to threat surfaces M-14 does not address.
 
-- A registry of permitted endpoint strings (hostnames, domains, OAuth issuer URLs) with explicit ownership and review cadence per entry — this is M-14's *own* state, not an external dependency.
 - An audit substrate to persist allowlist-decision events. SAFE-M-12 *Audit Logging* is the recommended choice; any structured event sink with retention and tamper-evidence equivalent to a security-audit log is acceptable. Without an audit substrate, M-14 still makes ADMIT/DENY decisions but loses the accountability trail.
 - For OAuth flows: SAFE-M-13 *OAuth Flow Verification* validates RFC 9207 `iss` claims after M-14 admits the issuer URL. M-14 alone does not protect against a forged token claiming an allowlisted issuer; without M-13, that gap remains open.
 - For hostname allowlists in untrusted networks: DNS integrity (DNSSEC, DNS-over-HTTPS) at the resolution layer, or cert-pinning at the transport layer, to close the DNS gap M-14 does not address.
+- SAFE-M-2 *Cryptographic Integrity for Tool Descriptions* — verifies the payload that flows over the connection M-14 admits.
 
 ### Implementation Steps
 
@@ -138,12 +145,17 @@ def connect_to_mcp_server_unsafe(config: dict) -> "MCPConnection":
 # certificate, or token validation; those are delegated to the transport
 # adapter (SAFE-M-45-adjacent or operator-deployed mTLS).
 
+import time
 from dataclasses import dataclass
 from urllib.parse import urlparse
 
+# Allowlist entries are tagged by `kind` because servers and OAuth issuers
+# canonicalize differently — see _canonicalize_server vs _canonicalize_oauth_issuer
+# below. The YAML schema (Example 2) reflects the same separation.
 @dataclass(frozen=True)
 class AllowlistEntry:
-    endpoint: str           # hostname or full URL
+    endpoint: str           # hostname / domain (kind="server") or full issuer URL (kind="oauth_issuer")
+    kind: str               # "server" | "oauth_issuer"
     owner: str
     review_by: str          # ISO-8601 date; entries past review_by are flagged stale
     reason: str
@@ -152,20 +164,48 @@ class ServerAllowlistPolicy:
     """Pure policy decision over a registry of permitted endpoint strings.
 
     M-14 surface only — does NOT perform certificate or token validation.
+    Servers and OAuth issuers are stored in separate sets and canonicalize
+    differently: server entries reduce to host[:port]; OAuth issuer entries
+    preserve scheme + host[:port] + path because RFC 8414 issuers can share
+    host[:port] and differ only by path (e.g., per-tenant issuers).
     """
 
     def __init__(self, entries: list[AllowlistEntry], shadow_mode: bool = False) -> None:
-        self._allowed = {self._canonicalize(e.endpoint) for e in entries}
+        self._server_allowed = {
+            self._canonicalize_server(e.endpoint) for e in entries if e.kind == "server"
+        }
+        self._oauth_issuer_allowed = {
+            self._canonicalize_oauth_issuer(e.endpoint) for e in entries if e.kind == "oauth_issuer"
+        }
         self._shadow_mode = shadow_mode
 
     @staticmethod
-    def _canonicalize(endpoint: str) -> str:
+    def _canonicalize_server(endpoint: str) -> str:
+        # Server entries are matched by host[:port] only.
         parsed = urlparse(endpoint if "://" in endpoint else f"https://{endpoint}")
         host = (parsed.hostname or "").lower()
         return f"{host}:{parsed.port}" if parsed.port else host
 
-    def evaluate(self, endpoint: str) -> bool:
-        return self._canonicalize(endpoint) in self._allowed
+    @staticmethod
+    def _canonicalize_oauth_issuer(issuer_url: str) -> str:
+        # OAuth issuer entries preserve scheme + host + port + path.
+        # RFC 8414 §2: an issuer URL can include a path component, and two
+        # distinct issuers (e.g., per-tenant) may share host[:port] and
+        # differ only by path. Dropping the path here would collapse them
+        # into one allowlist key and over-allow.
+        parsed = urlparse(issuer_url)
+        scheme = (parsed.scheme or "https").lower()
+        host = (parsed.hostname or "").lower()
+        host_port = f"{host}:{parsed.port}" if parsed.port else host
+        path = parsed.path.rstrip("/")  # treat trailing slash as equivalent
+        return f"{scheme}://{host_port}{path}"
+
+    def evaluate(self, endpoint: str, kind: str) -> bool:
+        if kind == "server":
+            return self._canonicalize_server(endpoint) in self._server_allowed
+        if kind == "oauth_issuer":
+            return self._canonicalize_oauth_issuer(endpoint) in self._oauth_issuer_allowed
+        raise ValueError(f"unknown allowlist kind: {kind!r}")
 
     @property
     def shadow_mode(self) -> bool:
@@ -175,13 +215,25 @@ def connect_to_mcp_server(
     config: dict,
     policy: ServerAllowlistPolicy,
     audit_emit,           # callable: emit_event(event_type, payload) → None
+    client_id: str,       # logical client identifier for the audit trail
 ) -> "MCPConnection":
     endpoint = config["mcp_server_endpoint"]
-    permitted = policy.evaluate(endpoint)
+    permitted = policy.evaluate(endpoint, kind="server")
 
+    # Audit payload carries the canonical fields M-14's Implementation Steps +
+    # Integration Testing sections document (timestamp, endpoint, decision,
+    # client_id, reason), plus a `kind` discriminator (server vs oauth_issuer)
+    # so analysts can query decisions by allowlist namespace.
     audit_emit(
         "safe_m_14_allowlist_decision",
-        {"endpoint": endpoint, "decision": "ADMIT" if permitted else "DENY"},
+        {
+            "timestamp_utc": time.time(),
+            "endpoint": endpoint,
+            "kind": "server",
+            "decision": "ADMIT" if permitted else "DENY",
+            "client_id": client_id,
+            "reason": None if permitted else "endpoint not in SAFE-M-14 allowlist",
+        },
     )
 
     if not permitted and not policy.shadow_mode:
@@ -287,3 +339,4 @@ suppressions:
 | Version | Date | Changes | Author |
 |---------|------|---------|--------|
 | 1.0 | 2026-05-02 | Initial documentation: 9 missing template sections authored from a prior 19-line stub; outbound-only scope; three-phase enforcement model with M-14 owning Phase 1 (pre-connect policy) only; curated Mitigates list of 6 directly-mapped citers from 12 raw cites; Out of scope section enumerates 3 mislabels, 2 partial-fits, and 1 boundary-deferred citation; canonical schema migration (Type→Category, Complexity→Implementation Complexity) | bishnu bista |
+| 1.1 | 2026-05-04 | **Security:** fixed OAuth issuer canonicalization in Example 1 — `_canonicalize` previously dropped the URL path component, collapsing distinct per-tenant issuers (e.g. `https://login.example.com/tenant1` vs `.../tenant2`, RFC 8414 §2) to the same `host[:port]` key and over-allowing across tenants. Split into separate `_canonicalize_server` (host[:port]) and `_canonicalize_oauth_issuer` (scheme + host + port + path with trailing-slash normalization) functions, with `AllowlistEntry.kind` and `evaluate(kind=...)` selecting the right canonicalization; YAML schema in Example 2 already separated `servers` from `oauth_authorization_servers` so the data model is unchanged. Extended Example 1's audit payload to carry the canonical fields M-14's own Implementation Steps + Integration Testing sections require (`timestamp_utc`, `client_id`, `reason`) plus an additional `kind` discriminator so analysts can query decisions by allowlist namespace; previously only `endpoint` and `decision` were emitted. **Template parity:** restored `### Prerequisites` subsection (template-required) with M-14's actual hard prerequisites (the endpoint registry; the connection-establishment hook); kept `### Recommended Companions` for genuine soft-companion items (audit substrate, SAFE-M-13, DNS integrity, SAFE-M-2). The fixup commit a88a963 had renamed Prerequisites→Recommended Companions on a verifier suggestion that conflated hard prereqs with soft companions; this v1.1 restores the template-required header while preserving the soft-companion framing for the items that actually were soft. | bishnu bista |
