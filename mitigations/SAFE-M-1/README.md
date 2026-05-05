@@ -90,6 +90,15 @@ Four citers reference SAFE-M-1 with labels that don't match its actual concept (
 - **Complexity**: Requires significant architectural changes — a dispatch layer, capability issuance and verification, and a trust-boundary manifest. Not a configuration-only mitigation.
 - **Not Universal**: Some agent task patterns (e.g., open-ended exploration over untrusted content) may be incompatible with strict separation; operators may need to opt-out specific workflows or design data-driven extension paths that respect the control/data split.
 
+## Out of scope
+
+Four citers reference SAFE-M-1 with labels that do not correspond to M-1's actual control concept (Control/Data Flow Separation). Each technique's primary defensive ask is heterogeneous and points to a different canonical mitigation; redirect targets are chosen per-case after reading each technique's mitigation-section context. They are excluded from the curated `## Mitigates` list above and tracked as a follow-up cleanup:
+
+- `techniques/SAFE-T1202/README.md` cites M-1 as **"Architectural Defense - Token Binding"** — wants token-binding / Proof-of-Possession controls. Different control concept (token-binding is about binding a credential to a transport-layer key, not about separating control flow from data flow). Redirect candidate: **SAFE-M-31 *Proof of Possession Tokens*** or **SAFE-M-37 *Token Rotation and Invalidation*** depending on the technique's specific section context.
+- `techniques/SAFE-T1704/README.md` cites M-1 as **"Strong Authentication"** — wants mutual TLS, signed server responses, and similar transport-authentication controls. Different control concept (transport authentication, not architectural flow separation). Redirect candidate: a transport-authentication canonical mitigation; verify against the canonical set before assigning.
+- `techniques/SAFE-T1911/README.md` cites M-1 as **"Input Validation"** — wants schema enforcement and parameter validation on tool arguments. Different control concept (input validation operates per-call on arguments; M-1 is architectural and operates over the whole control plane). Redirect candidate: **likely a new "Parameter Validation" canonical mitigation** — the corpus does not currently have a parameter-validation mitigation (same corpus-side gap surfaced by SAFE-M-5's partial-fit cluster).
+- `techniques/SAFE-T1915/README.md` cites M-1 as **"Input Validation"** — wants blockchain-transaction allowlists / bridge-route controls. Different control concept (chain-specific resource policy, not control/data separation). Redirect candidate: a chain-specific canonical mitigation; verify against the canonical set before assigning.
+
 ## Implementation Examples
 
 ### Example 1: Tool Call Protection
@@ -219,6 +228,11 @@ class HostCapabilityVerifier:
    - Measure dispatch overhead per tool call.
    - Validate error handling: capability-rejection paths, parser rejection paths, dispatch-layer fault paths.
 
+3. **Integration Testing**:
+   - End-to-end trust-boundary propagation: change a trust-boundary manifest entry and verify the parser, dispatch layer, and capability issuance authority all observe the new boundary within the deployed configuration's update window.
+   - Audit-substrate integration with [SAFE-M-12](../SAFE-M-12/README.md): every capability lifecycle event (issued / verified / consumed / rejected) emits a structured audit event with `correlation_id` joining issuance to consumption; replay an attempted capability-forgery sequence and confirm the audit chain reconstructs the attack timeline.
+   - Approval-gate integration with [SAFE-M-69](../SAFE-M-69/README.md): for capability grants whose `tool` falls within an operator-defined high-risk set, capability issuance requires an out-of-band approval before the grant is signed; verify the dispatch layer refuses the call when the approval ticket is absent or expired.
+
 ## Deployment Considerations
 
 ### Resource Requirements
@@ -262,3 +276,4 @@ General capability-based security frameworks are well-established ([Saltzer & Sc
 |---------|------|---------|--------|
 | 1.0 | 2025-01-03 | Initial documentation | Frederick Kautz |
 | 2.0 | 2026-05-02 | Additive expansion to template parity per corpus mitigation quality audit; authored Deployment Considerations and Current Status (2026) sections, added Prerequisites sub-section under Technical Implementation, expanded Mitigates list to 11 directly-mapped citing techniques (curated from 15 raw citers; 4 mislabels excluded with reason notes — tracked as safe-m-1-mislabel-cluster follow-up), added Implementation Example 2 (host-bound capability grant with replay protection and explicit no-token-through-LLM constraint), expanded References (Saltzer & Schroeder 1975, NIST SP 800-160 Vol 2 Appendix F, OWASP LLM01, MCP Specification), updated Related Mitigations (replaced M-3 with M-69 and M-22; preserved M-2). Corrected CaMeL performance framing to "7 percentage-point drop (77% vs 84% on AgentDojo)" with explicit research-artifact caveat | bishnu bista |
+| 2.1 | 2026-05-04 | Added `## Out of scope` section to back the existing "see Out of scope" reference in the Mitigates intro and at the end of Mitigates (v2.0 had two dangling pointers and no section). The section enumerates the four mislabeled citers (T1202 token-binding, T1704 strong-authentication, T1911 input-validation, T1915 input-validation) with per-citer rationale and per-citer redirect-candidate guidance — heterogeneous targets (M-31 / M-37 for T1202; transport-authentication canonical for T1704; new "Parameter Validation" canonical or similar for T1911; chain-specific canonical for T1915), to be confirmed per-case during the `safe-m-1-mislabel-cluster` follow-up. T1911's redirect is the same corpus-side gap surfaced by SAFE-M-5's partial-fit cluster (parameter validation). Also added the missing **Integration Testing** numbered sub-item under `## Testing and Validation` (item 3) — `mitigations/TEMPLATE.md` lists Integration Testing as the third numbered sub-item under that section, alongside Security Testing (item 1) and Functional Testing (item 2); v2.0 had only items 1 and 2. New Integration Testing items cover end-to-end trust-boundary propagation, M-12 audit-substrate integration with capability lifecycle events, and M-69 approval-gate integration for high-risk capability grants. | bishnu bista |
