@@ -3,7 +3,7 @@
 | SIG-SAFE-MCP     | Details                                                                                    |
 | ---------------- | ------------------------------------------------------------------------------------------ |
 | **Mailing List** | [openssf-sig-safe-mcp@lists.openssf.org](https://lists.openssf.org/g/openssf-sig-safe-mcp) |
-| **SIG Leads**    | Sarah Evans; Frederick Kautz                                                               |
+| **SIG Leads**    | Sarah Evans; Frederick Kautz; Bishnu Bista                                                 |
 | **Meeting Time** | 1:00 PM PT (PST/PDT) Bi-Weekly                                                             |
 | **Slack**        | OpenSSF #sig-safe-mcp                                                                      |
 
